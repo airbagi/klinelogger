@@ -1,5 +1,5 @@
-
 //
+
 // Copyright (C) 2004- Tactrix Inc.
 //
 // You are free to use this file for any purpose, but please keep
@@ -16,6 +16,7 @@
 #include <windows.h>
 
 // #define DEBUG_MESSAGES
+// #define TESTS
 
 /*
 HONDA KEIHIN KLINE PROTOCOL (DIAGNOSTIC)
@@ -58,8 +59,9 @@ const int HONDA_PROPRIETARY_TINIL = 70;
 const int HONDA_PROPRIETARY_TWUP = 200; //~120ms
 
 const HONDA_PACKET HELLO = {0x60, 0x02, {0x70, 0x02}};
-const HONDA_PACKET GET_ECU_INFO = {0x60, 0x02, {0x70, 0x0F}};
-const HONDA_PACKET GET_DTC[5] = {{0x60, 0x02, {0x08, 0x02}},
+const HONDA_PACKET GET_ECU_INFO = {0x60, 0x02, {0x20, 0xf}};
+const HONDA_PACKET GET_ECU_SERIAL = {0x60, 0x02, {0x30, 0xf}};
+const HONDA_PACKET GET_DTC[5] = {{0x60, 0x02, {0x08, 0x06}},
                                  {0x60, 0x02, {0x0A, 0x02}},
                                  {0x60, 0x02, {0x0C, 0x02}}};
 const HONDA_PACKET CLR_ERR = {0x61, 0x01, {0x01}};
@@ -87,6 +89,13 @@ void dump_msg(PASSTHRU_MSG *msg) {
     printf("%02X ", msg->Data[i]);
   printf("\n");
 } //..dump_msg
+
+void dump_hp(HONDA_PACKET *hp) {
+  printf("Packet : %02X [", hp->hrc);
+  for (unsigned int i = 0; i < hp->cmd_len; i++)
+    printf("%02X ", hp->cmd[i]);
+  printf("]\n");
+} //..dump_hp
 
 uint8_t iso_checksum(uint8_t *data, uint16_t len) {
   uint8_t crc = 0;
@@ -221,7 +230,7 @@ int sendmsg(const HONDA_PACKET *hp) {
   if (g_FirstMessage) {
     g_FirstMessage = 0;
     if (j2534.PassThruIoctl(chanID, FAST_INIT, &txmsg, &rxmsg)) {
-      printf("Error sending hello message\n");
+      // printf("Error sending hello message\n");
       //   return 0;
     }
   } else
@@ -264,10 +273,10 @@ int _tmain(int argc, _TCHAR *argv[]) {
     return false;
   }
 
-  printf("J2534 API Version: %s\n", strApiVersion);
-  printf("J2534 DLL Version: %s\n", strDllVersion);
-  printf("Device Firmware Version: %s\n", strFirmwareVersion);
-  printf("Device Serial Number: %s\n", strSerial);
+  // printf("J2534 API Version: %s\n", strApiVersion);
+  // printf("J2534 DLL Version: %s\n", strDllVersion);
+  // printf("Device Firmware Version: %s\n", strFirmwareVersion);
+  // printf("Device Serial Number: %s\n", strSerial);
 
   // use ISO9141_NO_CHECKSUM to disable checksumming on both tx and rx
   // messages
@@ -291,7 +300,7 @@ int _tmain(int argc, _TCHAR *argv[]) {
   if (j2534.PassThruIoctl(chanID, SET_CONFIG, &scl, NULL)) {
     reportJ2534Error();
   }
-  printf("Configured successfully...\n");
+  // printf("Configured successfully...\n");
 
   PASSTHRU_MSG rxmsg, txmsg;
 
@@ -320,21 +329,58 @@ int _tmain(int argc, _TCHAR *argv[]) {
     return 0;
   }
 
-  sendmsg(&HELLO);
+  printf("Start-up communication...\n");
+  HONDA_PACKET hp = HELLO;
+  sendmsg(&hp);
   receivemsg(&hpRec);
-  sendmsg(&GET_ECU_INFO);
+#ifndef TESTS
+  printf("Reading ECU information...\n");
+  hp.cmd[1] = 0x0F;
+  sendmsg(&hp);
   receivemsg(&hpRec);
-  printf("ECU ID: %s\n", hextostr(hpRec.cmd, hpRec.cmd_len));
+  printf("SOME ID: %s\n", hextostr(hpRec.cmd, hpRec.cmd_len));
 
+  hp = GET_ECU_INFO;
+  sendmsg(&hp);
+  receivemsg(&hpRec);
+  printf("ECU ID: %s\n", hpRec.cmd);
+
+  hp = GET_ECU_SERIAL;
+  sendmsg(&hp);
+  receivemsg(&hpRec);
+  printf("ECU SERIAL: %s\n", hpRec.cmd);
+
+  printf("Reading DTC information...\n");
   for (int i = 0; i < 3; i++) {
     sendmsg(&GET_DTC[i]);
     receivemsg(&hpRec);
     printf("DTC: %s\n", dtc_fromdata(&hpRec));
   }
 
+  printf("Clearing DTC information...\n");
   sendmsg(&CLR_ERR);
   receivemsg(&hpRec);
   printf("Clear: %s\n", hextostr(hpRec.cmd, hpRec.cmd_len));
+
+#else
+
+  HONDA_PACKET sp;
+  for (int i = 0; i < 0xFF; i++) {
+    for (int inter = 0x5F; inter < 0x63; inter++) {
+      sp.hrc = inter; //!< we know only this interface and 0x61
+      for (int j = 2; j < 0x0f; j++) {
+        sp.cmd_len = j;
+        sp.cmd[1] = i;
+        sp.cmd[0] = i;
+        printf("Sending >");
+        dump_hp(&sp);
+        sendmsg(&sp);
+        receivemsg(&hpRec);
+        printf("Reply < %s\n", hextostr(hpRec.cmd, hpRec.cmd_len));
+      } //..j
+    }   //..inter
+  }     //..i
+#endif
 
   // shut down the channel
 
