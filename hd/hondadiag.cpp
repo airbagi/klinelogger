@@ -15,7 +15,7 @@
 #include <time.h>
 #include <windows.h>
 
-#define MIN(a, b) (((a) < (b)) ? (a) : (b))
+// #define DEBUG_MESSAGES
 
 /*
 HONDA KEIHIN KLINE PROTOCOL (DIAGNOSTIC)
@@ -28,24 +28,45 @@ HONDA KEIHIN KLINE PROTOCOL (DIAGNOSTIC)
     ECU Response = 02 04 00 FA
     Repeat point 1 if there is no response from the ECU. And continue the next
 Steps if there is a response from the ECU
+DESCRIPTION:
+    Request = 72 AA BB CC CS
+    72 = Request Header Code
+    AA = Number of Bytes (including the Checksum)
+    BB = Query Table
+    CC = Table
+    CS = Checksum
+
+CHECKSUM
+
+    Usually to make a data table can be started from 00 to FF. With code 72 05
+71 ZZ CS Where ZZ = data table 00 to FF and CS = Checksum The formula checksum =
+100 - (sumbyte and FF) For example the data request Table 13 = 72 05 71 13 CS
+Then the checksum value = 100 - ((72 + 05 + 71 + 13) AND FF) , result CS = 05 So
+the data request table 13 = 72 05 71 13 05
+
 
 */
+#define HONDA_MAX_DATASIZE 100
+
+typedef struct {
+  uint8_t hrc;
+  uint8_t cmd_len;
+  uint8_t cmd[HONDA_MAX_DATASIZE];
+} HONDA_PACKET;
+
 const int HONDA_PROPRIETARY_TINIL = 70;
 const int HONDA_PROPRIETARY_TWUP = 200; //~120ms
-const uint8_t HELLO[] = {0x60, 0x05, 0x70, 0x02, 0x29};
-const uint8_t GET_ECU_INFO[] = {0x60, 0x05, 0x70, 0x0F, 0x1C};
-//                              ^^id  ^^len ^^ data
-const uint8_t GET_DTC[][5] = {{0x60, 0x05, 0x08, 0x02, 0x91},
-                              {0x60, 0x05, 0x0A, 0x02, 0x8F},
-                              {0x60, 0x05, 0x0C, 0x02, 0x8D}};
 
-const uint8_t CLR_ERR[] = {0x61, 0x04, 0x01, 0x9A};
-char szOut[1024];
+const HONDA_PACKET HELLO = {0x60, 0x02, {0x70, 0x02}};
+const HONDA_PACKET GET_ECU_INFO = {0x60, 0x02, {0x70, 0x0F}};
+const HONDA_PACKET GET_DTC[5] = {{0x60, 0x02, {0x08, 0x02}},
+                                 {0x60, 0x02, {0x0A, 0x02}},
+                                 {0x60, 0x02, {0x0C, 0x02}}};
+const HONDA_PACKET CLR_ERR = {0x61, 0x01, {0x01}};
+//
+char szOut[1024]; // output string
 
-void usage() {
-  printf("Diagnostics of HONDA CR-V 3 SRS ECU.\n\n");
-  exit(0);
-}
+void usage() { printf("Diagnostics of HONDA CR-V 3 SRS ECU.\n\n"); }
 
 J2534 j2534;
 unsigned long devID;
@@ -67,6 +88,38 @@ void dump_msg(PASSTHRU_MSG *msg) {
   printf("\n");
 } //..dump_msg
 
+uint8_t iso_checksum(uint8_t *data, uint16_t len) {
+  uint8_t crc = 0;
+  for (uint8_t i = 0; i < len; i++)
+    crc = crc + data[i];
+  return 0x100 - crc;
+}
+
+void make_packet(const HONDA_PACKET *cmd, PASSTHRU_MSG *msg) {
+  memset(msg->Data, 0, 100);
+  msg->Data[0] = cmd->hrc;
+  uint8_t alen = cmd->cmd_len + 3;
+  msg->Data[1] = alen;
+  memcpy(msg->Data + 2, cmd->cmd, cmd->cmd_len);
+  msg->Data[alen - 1] = iso_checksum(msg->Data, alen - 1);
+  msg->DataSize = alen;
+} //..make_packet
+
+int decode_packet(PASSTHRU_MSG *msg, HONDA_PACKET *cmd) {
+  int br = 1;
+  cmd->hrc = msg->Data[0];
+  cmd->cmd_len = msg->DataSize - 3;
+  uint8_t cs = iso_checksum(msg->Data, msg->DataSize - 1);
+  if (cs != msg->Data[msg->DataSize - 1]) {
+    printf("Invalid checksum in result!"); // << warning
+    br = 0;
+  }
+  if (cmd->cmd_len > HONDA_MAX_DATASIZE)
+    cmd->cmd_len = HONDA_MAX_DATASIZE;
+  memcpy(cmd->cmd, msg->Data + 2, cmd->cmd_len);
+  return br;
+} //..decode_packet
+
 const char *hextostr(uint8_t *ptr, int size) {
   char szHex[5];
   szOut[0] = 0;
@@ -78,13 +131,10 @@ const char *hextostr(uint8_t *ptr, int size) {
   return szOut;
 } //..dump_msg
 
-const char *dtc_fromdata(uint8_t *ptr, int size) {
-  if (size < 4)
-    return "";
-  sprintf(szOut, "%02X-%02X", ptr[2], ptr[3]);
-  // szOut[size] = 0;
+const char *dtc_fromdata(HONDA_PACKET *hp) {
+  sprintf(szOut, "%02X-%02X", hp->cmd[0], hp->cmd[1]);
   return szOut;
-}
+} //..dtc_fromdata
 
 bool get_serial_num(char *serial) {
   struct {
@@ -115,7 +165,7 @@ bool get_serial_num(char *serial) {
   return true;
 }
 
-int receivemsg(uint8_t *pmsg, uint16_t validsize, uint16_t *msglen) {
+int receivemsg(HONDA_PACKET *hp) {
   unsigned long numRxMsg;
   PASSTHRU_MSG rxmsg;
   memset(&rxmsg, 0, sizeof(rxmsg));
@@ -124,9 +174,10 @@ int receivemsg(uint8_t *pmsg, uint16_t validsize, uint16_t *msglen) {
   while (time(NULL) - last_status_update < 5) {
     if (0 == j2534.PassThruReadMsgs(chanID, &rxmsg, &numRxMsg, 1000)) {
       if (numRxMsg && rxmsg.DataSize) {
-        // dump_msg(&rxmsg); // debug
-        *msglen = MIN(validsize, rxmsg.DataSize);
-        memcpy(pmsg, rxmsg.Data, *msglen);
+#ifdef DEBUG_MESSAGES
+        dump_msg(&rxmsg); // debug
+#endif
+        decode_packet(&rxmsg, hp);
         break;
       }
     }
@@ -152,7 +203,7 @@ A pulse of 70 ms similar to the Fast Init of ISO14230 is sent to wake up the ECU
 before communication starts.
 */
 
-int sendmsg(const uint8_t *msg, int msglen) {
+int sendmsg(const HONDA_PACKET *hp) {
 
   PASSTHRU_MSG txmsg, rxmsg;
   unsigned long NumMsgs = 1;
@@ -161,23 +212,20 @@ int sendmsg(const uint8_t *msg, int msglen) {
   txmsg.RxStatus = 0;
   txmsg.TxFlags = 0;
   txmsg.Timestamp = time(NULL);
-  txmsg.DataSize = msglen;
+  txmsg.DataSize = 0;
   txmsg.ExtraDataIndex = 0;
-
-  memcpy(txmsg.Data, msg, msglen);
-  memcpy(rxmsg.Data, msg, msglen);
-  printf("Sending %d: ", msglen);
-  // dump_msg(&txmsg);
+  make_packet(hp, &txmsg);
+#ifdef DEBUG_MESSAGES
+  dump_msg(&txmsg); // debug
+#endif
   if (g_FirstMessage) {
     g_FirstMessage = 0;
     if (j2534.PassThruIoctl(chanID, FAST_INIT, &txmsg, &rxmsg)) {
-      // printf("Error sending hello message\n");
+      printf("Error sending hello message\n");
       //   return 0;
     }
-    // dump_msg(&rxmsg);
   } else
     return j2534.PassThruWriteMsgs(chanID, &txmsg, &NumMsgs, 0);
-
   return 0;
 } //..sendmsg
 
@@ -188,22 +236,7 @@ int _tmain(int argc, _TCHAR *argv[]) {
   unsigned int parity = NO_PARITY;
   unsigned int timeout = 50;
 
-  for (int argi = 1; argi < argc; argi++) {
-    if (argv[argi][0] == '/' || argv[argi][0] == '-') {
-      // looks like a switch
-      char *sw = &argv[argi][1];
-      if (strcmp(sw, "d") == 0) {
-        argi++;
-        if (argi >= argc)
-          usage();
-
-      } else if (strcmp(sw, "c") == 0) {
-
-      } else if (strcmp(sw, "b") == 0) {
-      }
-    }
-
-  } //..for
+  usage();
 
   if (!j2534.init()) {
     printf("can't connect to J2534 DLL.\n");
@@ -266,7 +299,7 @@ int _tmain(int argc, _TCHAR *argv[]) {
   PASSTHRU_MSG msgMask, msgPattern;
   unsigned long msgId;
   unsigned long numRxMsg;
-  uint8_t recMsg[100];
+  HONDA_PACKET hpRec; //!< recieve packet
   uint16_t l;
 
   // simply create a "pass all" filter so that we can see
@@ -287,22 +320,21 @@ int _tmain(int argc, _TCHAR *argv[]) {
     return 0;
   }
 
-  sendmsg(HELLO, sizeof(HELLO));
-  printf("11111111111\n");
-  receivemsg(recMsg, 100, &l);
-  sendmsg(GET_ECU_INFO, sizeof(GET_ECU_INFO));
-  receivemsg(recMsg, 100, &l);
-  printf("ECU ID: %s\n", hextostr(recMsg, l));
+  sendmsg(&HELLO);
+  receivemsg(&hpRec);
+  sendmsg(&GET_ECU_INFO);
+  receivemsg(&hpRec);
+  printf("ECU ID: %s\n", hextostr(hpRec.cmd, hpRec.cmd_len));
 
   for (int i = 0; i < 3; i++) {
-    sendmsg(GET_DTC[i], sizeof(GET_DTC[i]));
-    receivemsg(recMsg, 100, &l);
-    printf("DTC: %s\n", dtc_fromdata(recMsg, l));
+    sendmsg(&GET_DTC[i]);
+    receivemsg(&hpRec);
+    printf("DTC: %s\n", dtc_fromdata(&hpRec));
   }
 
-  sendmsg(CLR_ERR, sizeof(CLR_ERR));
-  receivemsg(recMsg, 100, &l);
-  printf("Clear: %s\n", hextostr(recMsg, l));
+  sendmsg(&CLR_ERR);
+  receivemsg(&hpRec);
+  printf("Clear: %s\n", hextostr(hpRec.cmd, hpRec.cmd_len));
 
   // shut down the channel
 
