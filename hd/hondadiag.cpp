@@ -49,15 +49,16 @@ the data request table 13 = 72 05 71 13 05
 */
 #define HONDA_MAX_DATASIZE 100
 
+/** HONDA message packet structure */
 typedef struct {
   uint8_t hrc;
   uint8_t cmd_len;
   uint8_t cmd[HONDA_MAX_DATASIZE];
 } HONDA_PACKET;
 
-const int HONDA_PROPRIETARY_TINIL = 70;
-const int HONDA_PROPRIETARY_TWUP = 200; //~120ms
-
+const int HONDA_PROPRIETARY_TINIL = 70; // 70ms
+const int HONDA_PROPRIETARY_TWUP = 200; //~120ms why? don't ask
+// diagnostic messages:
 const HONDA_PACKET HELLO = {0x60, 0x02, {0x70, 0x02}};
 const HONDA_PACKET GET_ECU_INFO = {0x60, 0x02, {0x20, 0xf}};
 const HONDA_PACKET GET_ECU_SERIAL = {0x60, 0x02, {0x30, 0xf}};
@@ -69,10 +70,15 @@ const HONDA_PACKET CLR_ERR = {0x61, 0x01, {0x01}};
 char szOut[1024]; // output string
 
 void usage() { printf("Diagnostics of HONDA CR-V 3 SRS ECU.\n\n"); }
+void ECU_silent() {
+  printf("Error receiving ECU response\n\n");
+  exit(1);
+}
 
 J2534 j2534;
 unsigned long devID;
 unsigned long chanID;
+int g_FirstMessage = 1;
 
 void reportJ2534Error() {
   char err[512];
@@ -90,6 +96,11 @@ void dump_msg(PASSTHRU_MSG *msg) {
   printf("\n");
 } //..dump_msg
 
+/**
+ * @brief dump HONDA_PACKET
+ * @remark used for debugging, set DEBUG_MESSAGES to see all traffic in output
+ * @param hp HONDA_PACKET pointer
+ */
 void dump_hp(HONDA_PACKET *hp) {
   printf("Packet : %02X [", hp->hrc);
   for (unsigned int i = 0; i < hp->cmd_len; i++)
@@ -97,13 +108,26 @@ void dump_hp(HONDA_PACKET *hp) {
   printf("]\n");
 } //..dump_hp
 
+/**
+ * @brief calculate checksum of the message received or to be transferred
+ * @param data - data array
+ * @param len - length of the data array
+ * @return 8-bit checksum
+ */
 uint8_t iso_checksum(uint8_t *data, uint16_t len) {
   uint8_t crc = 0;
   for (uint8_t i = 0; i < len; i++)
     crc = crc + data[i];
   return 0x100 - crc;
-}
+} //..iso_checksum
 
+/**
+ * @brief create PASSTHRU_MSG from HONDA_PACKET structure
+ * @param cmd - HONDA_PACKET structure pointer
+ * @param msg - destination PASSTHRU_MSG structure
+ * @remark in the destination packet filled only DataSize and Data
+ * parameters, no other fields are filled up.
+ */
 void make_packet(const HONDA_PACKET *cmd, PASSTHRU_MSG *msg) {
   memset(msg->Data, 0, 100);
   msg->Data[0] = cmd->hrc;
@@ -114,6 +138,12 @@ void make_packet(const HONDA_PACKET *cmd, PASSTHRU_MSG *msg) {
   msg->DataSize = alen;
 } //..make_packet
 
+/**
+ * @brief  fill up HONDA_PACKET structure from received PASSTHRU_MSG
+ * @param msg - received PASSTHRU_MSG structure
+ * @param cmd - HONDA_PACKET destination structure pointer
+ * @return 1 on success, 0 - on checksum error
+ */
 int decode_packet(PASSTHRU_MSG *msg, HONDA_PACKET *cmd) {
   int br = 1;
   cmd->hrc = msg->Data[0];
@@ -129,6 +159,13 @@ int decode_packet(PASSTHRU_MSG *msg, HONDA_PACKET *cmd) {
   return br;
 } //..decode_packet
 
+/**
+ * @brief convert binary to hex string
+ *
+ * @param ptr - binary data
+ * @param size - size of the data
+ * @return const char* string with hex
+ */
 const char *hextostr(uint8_t *ptr, int size) {
   char szHex[5];
   szOut[0] = 0;
@@ -138,8 +175,14 @@ const char *hextostr(uint8_t *ptr, int size) {
   } //..for
   // szOut[size] = 0;
   return szOut;
-} //..dump_msg
+} //..hextostr
 
+/**
+ * @brief get DTC from HONDA_PACKET structure
+ *
+ * @param hp - HONDA_PACKET structure pointer
+ * @return const char* DTC in text format `53-89`
+ */
 const char *dtc_fromdata(HONDA_PACKET *hp) {
   sprintf(szOut, "%02X-%02X", hp->cmd[0], hp->cmd[1]);
   return szOut;
@@ -174,8 +217,13 @@ bool get_serial_num(char *serial) {
   return true;
 }
 
+/** receive HONDA_PACKET from k-line
+ * @param hp - HONDA_PACKET var pointer
+ * @return 1 on message received, 0 on no messages received
+ */
 int receivemsg(HONDA_PACKET *hp) {
   unsigned long numRxMsg;
+  int nResult = 0;
   PASSTHRU_MSG rxmsg;
   memset(&rxmsg, 0, sizeof(rxmsg));
   time_t last_status_update = time(NULL);
@@ -187,14 +235,13 @@ int receivemsg(HONDA_PACKET *hp) {
         dump_msg(&rxmsg); // debug
 #endif
         decode_packet(&rxmsg, hp);
+        nResult = 1;
         break;
       }
     }
   }
-  return numRxMsg;
+  return nResult;
 } //..receivemsg
-
-int g_FirstMessage = 1;
 
 /*
 
@@ -287,8 +334,7 @@ int _tmain(int argc, _TCHAR *argv[]) {
     return 0;
   }
 
-  // set timing
-
+  // set timing, honda specific parameters
   SCONFIG_LIST scl;
   SCONFIG scp[4] = {{P1_MAX, 0}, {PARITY, 0}, {TWUP, 50}, {TINIL, 25}};
   scl.NumOfParams = 4;
@@ -302,18 +348,16 @@ int _tmain(int argc, _TCHAR *argv[]) {
   }
   // printf("Configured successfully...\n");
 
-  PASSTHRU_MSG rxmsg, txmsg;
+  PASSTHRU_MSG txmsg;
 
   // now setup the filter(s)
   PASSTHRU_MSG msgMask, msgPattern;
   unsigned long msgId;
   unsigned long numRxMsg;
   HONDA_PACKET hpRec; //!< recieve packet
-  uint16_t l;
 
   // simply create a "pass all" filter so that we can see
   // everything unfiltered in the raw stream
-
   txmsg.ProtocolID = protocol;
   txmsg.RxStatus = 0;
   txmsg.TxFlags = 0;
@@ -321,7 +365,7 @@ int _tmain(int argc, _TCHAR *argv[]) {
   txmsg.DataSize = 1;
   txmsg.ExtraDataIndex = 0;
   msgMask = msgPattern = txmsg;
-  memset(msgMask.Data, 0, 1);    // mask the first 4 byte to 0
+  memset(msgMask.Data, 0, 1);    // mask the first byte to 0
   memset(msgPattern.Data, 0, 1); // match it with 0 (i.e. pass everything)
   if (j2534.PassThruStartMsgFilter(chanID, PASS_FILTER, &msgMask, &msgPattern,
                                    NULL, &msgId)) {
@@ -337,29 +381,39 @@ int _tmain(int argc, _TCHAR *argv[]) {
   printf("Reading ECU information...\n");
   hp.cmd[1] = 0x0F;
   sendmsg(&hp);
-  receivemsg(&hpRec);
+  if (!receivemsg(&hpRec)) {
+    ECU_silent();
+  }
   printf("SOME ID: %s\n", hextostr(hpRec.cmd, hpRec.cmd_len));
 
   hp = GET_ECU_INFO;
   sendmsg(&hp);
-  receivemsg(&hpRec);
+  if (!receivemsg(&hpRec)) {
+    ECU_silent();
+  }
   printf("ECU ID: %s\n", hpRec.cmd);
 
   hp = GET_ECU_SERIAL;
   sendmsg(&hp);
-  receivemsg(&hpRec);
+  if (!receivemsg(&hpRec)) {
+    ECU_silent();
+  }
   printf("ECU SERIAL: %s\n", hpRec.cmd);
 
   printf("Reading DTC information...\n");
   for (int i = 0; i < 3; i++) {
     sendmsg(&GET_DTC[i]);
-    receivemsg(&hpRec);
+    if (!receivemsg(&hpRec)) {
+      ECU_silent();
+    }
     printf("DTC: %s\n", dtc_fromdata(&hpRec));
   }
 
   printf("Clearing DTC information...\n");
   sendmsg(&CLR_ERR);
-  receivemsg(&hpRec);
+  if (!receivemsg(&hpRec)) {
+    ECU_silent();
+  }
   printf("Clear: %s\n", hextostr(hpRec.cmd, hpRec.cmd_len));
 
 #else
