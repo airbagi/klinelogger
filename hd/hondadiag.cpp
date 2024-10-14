@@ -419,21 +419,27 @@ int _tmain(int argc, _TCHAR *argv[]) {
 #else
 
   HONDA_PACKET sp;
-  for (int inter = 0x60; inter < 0x63; inter++) {
-    for (int i = 0; i < 0xFF; i++) {
-      sp.hrc = inter; //!< we know only this interface and 0x61
-      for (int j = 2; j < 0x0f; j++) {
-        sp.cmd_len = 2;
-        sp.cmd[0] = i; // function
-        sp.cmd[1] = j; // res size
-        printf("Sending >");
-        dump_hp(&sp);
-        sendmsg(&sp);
-        receivemsg(&hpRec);
-        printf("Reply < %s\n", hextostr(hpRec.cmd, hpRec.cmd_len));
-      } //..j
-    }   //..inter
-  }     //..i
+  for (int inter = 0x0; inter < 0xFF; inter++) {
+    /** reset ECU to clear previous problems!  */
+    g_FirstMessage = 1;
+    hp = HELLO;
+    sendmsg(&hp);
+    receivemsg(&hpRec);
+
+    // for (int i = 0x0; i < 0xFF; i += 0x10) {
+    sp.hrc = inter; //!< we know only this interface and 0x61
+                    // for (int j = 2; j < 0x0f; j++) {
+    sp.cmd_len = 2;
+    sp.cmd[0] = 0;    // i;    // function
+    sp.cmd[1] = 0x10; // res size
+    printf("Sending >");
+    dump_hp(&sp);
+    sendmsg(&sp);
+    receivemsg(&hpRec);
+    printf("Reply < %s\n", hextostr(hpRec.cmd, hpRec.cmd_len));
+    //} //..j
+    //} //..inter
+  } //..i
 #endif
 
   // shut down the channel
