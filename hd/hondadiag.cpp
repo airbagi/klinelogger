@@ -15,8 +15,8 @@
 #include <time.h>
 #include <windows.h>
 
-// #define DEBUG_MESSAGES
-// #define TESTS
+//#define DEBUG_MESSAGES
+//#define TESTS
 
 /*
 HONDA KEIHIN KLINE PROTOCOL (DIAGNOSTIC)
@@ -66,6 +66,7 @@ const HONDA_PACKET GET_DTC[5] = {{0x60, 0x02, {0x08, 0x06}},
                                  {0x60, 0x02, {0x0A, 0x02}},
                                  {0x60, 0x02, {0x0C, 0x02}}};
 const HONDA_PACKET CLR_ERR = {0x61, 0x01, {0x01}};
+const HONDA_PACKET END_SESS = {0x60, 0x02, {0x80, 0x0A}};
 //
 char szOut[1024]; // output string
 
@@ -384,8 +385,8 @@ int _tmain(int argc, _TCHAR *argv[]) {
   if (!receivemsg(&hpRec)) {
     ECU_silent();
   }
+  // get ECU info
   printf("SOME ID: %s\n", hextostr(hpRec.cmd, hpRec.cmd_len));
-
   hp = GET_ECU_INFO;
   sendmsg(&hp);
   if (!receivemsg(&hpRec)) {
@@ -399,16 +400,23 @@ int _tmain(int argc, _TCHAR *argv[]) {
     ECU_silent();
   }
   printf("ECU SERIAL: %s\n", hpRec.cmd);
-
+  // read dtc
   printf("Reading DTC information...\n");
+  int bnoDTC = 1;
   for (int i = 0; i < 3; i++) {
     sendmsg(&GET_DTC[i]);
     if (!receivemsg(&hpRec)) {
       ECU_silent();
     }
-    printf("DTC: %s\n", dtc_fromdata(&hpRec));
+    if (hpRec.cmd[0] || hpRec.cmd[1]) {
+      printf("DTC: %s\n", dtc_fromdata(&hpRec));
+      bnoDTC = 0;
+    }
   }
-
+  // show no dtc message:
+  if (bnoDTC)
+    printf("NO DTC\n");
+  // clear dtc:
   printf("Clearing DTC information...\n");
   sendmsg(&CLR_ERR);
   if (!receivemsg(&hpRec)) {
@@ -418,27 +426,21 @@ int _tmain(int argc, _TCHAR *argv[]) {
 
 #else
 
-  HONDA_PACKET sp;
-  for (int inter = 0x0; inter < 0xFF; inter++) {
+  HONDA_PACKET sp = CLR_ERR;
+  for (int i = 0x0; i < 0xFF; i++) {
     /** reset ECU to clear previous problems!  */
     g_FirstMessage = 1;
     hp = HELLO;
     sendmsg(&hp);
     receivemsg(&hpRec);
-
-    // for (int i = 0x0; i < 0xFF; i += 0x10) {
-    sp.hrc = inter; //!< we know only this interface and 0x61
-                    // for (int j = 2; j < 0x0f; j++) {
-    sp.cmd_len = 2;
-    sp.cmd[0] = 0;    // i;    // function
-    sp.cmd[1] = 0x10; // res size
+    sp.cmd[0] = i; // i;    // function
     printf("Sending >");
     dump_hp(&sp);
     sendmsg(&sp);
     receivemsg(&hpRec);
     printf("Reply < %s\n", hextostr(hpRec.cmd, hpRec.cmd_len));
-    //} //..j
-    //} //..inter
+    sendmsg(&END_SESS);
+    receivemsg(&hpRec);
   } //..i
 #endif
 
