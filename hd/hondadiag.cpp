@@ -16,7 +16,7 @@
 #include <windows.h>
 
 //#define DEBUG_MESSAGES
-//#define TESTS
+// #define TESTS
 
 /*
 HONDA KEIHIN KLINE PROTOCOL (DIAGNOSTIC)
@@ -427,7 +427,7 @@ int _tmain(int argc, _TCHAR *argv[]) {
 #else
 
   HONDA_PACKET sp = CLR_ERR;
-  for (int i = 0x0; i < 0xFF; i++) {
+  for (int i = 0x2; i < 0x3; i++) {
     /** reset ECU to clear previous problems!  */
     g_FirstMessage = 1;
     hp = HELLO;
@@ -441,6 +441,7 @@ int _tmain(int argc, _TCHAR *argv[]) {
     printf("Reply < %s\n", hextostr(hpRec.cmd, hpRec.cmd_len));
     sendmsg(&END_SESS);
     receivemsg(&hpRec);
+    Sleep(5);
   } //..i
 #endif
 
