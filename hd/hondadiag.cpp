@@ -15,7 +15,7 @@
 #include <time.h>
 #include <windows.h>
 
-//#define DEBUG_MESSAGES
+// #define DEBUG_MESSAGES
 // #define TESTS
 
 /*
@@ -261,7 +261,6 @@ before communication starts.
 */
 
 int sendmsg(const HONDA_PACKET *hp) {
-
   PASSTHRU_MSG txmsg, rxmsg;
   unsigned long NumMsgs = 1;
 
@@ -285,6 +284,15 @@ int sendmsg(const HONDA_PACKET *hp) {
     return j2534.PassThruWriteMsgs(chanID, &txmsg, &NumMsgs, 0);
   return 0;
 } //..sendmsg
+
+/** checks if the crash data inside reply: */
+int check_crash(const HONDA_PACKET *hp) {
+  for (int i = 0; i < hp->cmd_len; i++) {
+    if (hp->cmd[i])
+      return 1;
+  }
+  return 0;
+} //..check_crash
 
 int _tmain(int argc, _TCHAR *argv[]) {
   char *outfile = NULL;
@@ -413,6 +421,23 @@ int _tmain(int argc, _TCHAR *argv[]) {
       bnoDTC = 0;
     }
   }
+  // end session
+  // crash can be detected on END_SESSION reply:
+  sendmsg(&END_SESS);
+  receivemsg(&hpRec);
+  if (check_crash(&hpRec)) {
+    HONDA_PACKET sp = CLR_ERR;
+    printf("Crash inside ECU. Now clearing...\n");
+    // clear crash data:
+    hp = HELLO;
+    sendmsg(&hp);
+    receivemsg(&hpRec);
+    sp.cmd[0] = 2;
+    sendmsg(&sp);
+    receivemsg(&hpRec);
+    sendmsg(&END_SESS);
+  } // crash work
+
   // show no dtc message:
   if (bnoDTC)
     printf("NO DTC\n");
