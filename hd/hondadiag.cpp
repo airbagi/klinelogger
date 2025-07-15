@@ -14,7 +14,7 @@
 #include <tchar.h>
 #include <time.h>
 #include <windows.h>
-#include <dtc.h>
+#include "dtc.h"
 
 // #define DEBUG_MESSAGES
 // #define TESTS
@@ -191,10 +191,10 @@ int mask_compare(const char *s1, const char *s2) {
   return 0;
 } //..mask_compare
 
-const char *get_dtc_descr(dtc_str) {
+const char *get_dtc_descr(const char* dtc_str) {
   for (int i = 0; i < sizeof(g_Known_DTCs) / sizeof(DTC_struct); i++) {
-    if (0 == mask_compare(g_Known_DTCs[i][0], dtc_str)) {
-      return g_Known_DTCs[i][1];
+    if (0 == mask_compare(g_Known_DTCs[i].szCode, dtc_str)) {
+      return g_Known_DTCs[i].szDescr;
     }
   } //..for
   return "Unknown DTC";
@@ -440,7 +440,7 @@ int _tmain(int argc, _TCHAR *argv[]) {
       ECU_silent();
     }
     if (hpRec.cmd[0] || hpRec.cmd[1]) {
-      char *szDtc = dtc_fromdata(&hpRec);
+      const char *szDtc = dtc_fromdata(&hpRec);
       printf("DTC: %s %s\n", szDtc, get_dtc_descr(szDtc));
       bnoDTC = 0;
     }
@@ -456,7 +456,8 @@ int _tmain(int argc, _TCHAR *argv[]) {
       printf("%02X ", hpRec.cmd[i]);
     }
     printf("\nClear (Y/N)?");
-    if (0 == strcmp("Y", gets())) {
+    char s[100];    gets(s);
+    if (0 == strcmp("Y", s)) {
       // clear crash data:
       hp = HELLO;
       sendmsg(&hp);

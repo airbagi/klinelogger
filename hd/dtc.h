@@ -5,7 +5,7 @@ struct DTC_struct {
   const char *szDescr;
 };
 
-const DTC_struct g_Known_DTCs[] = {
+const struct DTC_struct g_Known_DTCs[] = {
     {"A1-1x", "Faulty Power Supply VA Line"},
     {"A2-1x", "Faulty Power Supply VB Line"},
     {"D1-11", "Driver Air Bag Module And Seat Belt Tensioner Deployed"},
