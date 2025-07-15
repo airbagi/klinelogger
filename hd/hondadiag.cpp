@@ -14,6 +14,7 @@
 #include <tchar.h>
 #include <time.h>
 #include <windows.h>
+#include <dtc.h>
 
 // #define DEBUG_MESSAGES
 // #define TESTS
@@ -178,6 +179,27 @@ const char *hextostr(uint8_t *ptr, int size) {
   return szOut;
 } //..hextostr
 
+int mask_compare(const char *s1, const char *s2) {
+  for (int i = 0; i < strlen(s1); i++) {
+    if (i > strlen(s2))
+      return 1;
+    if ('x' == s1[i]) // any symbol
+      continue;
+    if (s1[i] != s2[i])
+      return s1[i] - s2[i];
+  } //..for
+  return 0;
+} //..mask_compare
+
+const char *get_dtc_descr(dtc_str) {
+  for (int i = 0; i < sizeof(g_Known_DTCs) / sizeof(DTC_struct); i++) {
+    if (0 == mask_compare(g_Known_DTCs[i][0], dtc_str)) {
+      return g_Known_DTCs[i][1];
+    }
+  } //..for
+  return "Unknown DTC";
+} //..get_dtc_descr
+
 /**
  * @brief get DTC from HONDA_PACKET structure
  *
@@ -288,8 +310,9 @@ int sendmsg(const HONDA_PACKET *hp) {
 /** checks if the crash data inside reply: */
 int check_crash(const HONDA_PACKET *hp) {
   for (int i = 0; i < hp->cmd_len; i++) {
-    if (hp->cmd[i])
+    if (hp->cmd[i]) {
       return 1;
+    }
   }
   return 0;
 } //..check_crash
@@ -417,7 +440,8 @@ int _tmain(int argc, _TCHAR *argv[]) {
       ECU_silent();
     }
     if (hpRec.cmd[0] || hpRec.cmd[1]) {
-      printf("DTC: %s\n", dtc_fromdata(&hpRec));
+      char *szDtc = dtc_fromdata(&hpRec);
+      printf("DTC: %s %s\n", szDtc, get_dtc_descr(szDtc));
       bnoDTC = 0;
     }
   }
@@ -427,14 +451,20 @@ int _tmain(int argc, _TCHAR *argv[]) {
   receivemsg(&hpRec);
   if (check_crash(&hpRec)) {
     HONDA_PACKET sp = CLR_ERR;
-    printf("Crash inside ECU. Now clearing...\n");
-    // clear crash data:
-    hp = HELLO;
-    sendmsg(&hp);
-    receivemsg(&hpRec);
-    sp.cmd[0] = 2;
-    sendmsg(&sp);
-    receivemsg(&hpRec);
+    printf("Crash inside ECU:\n");
+    for (int i = 0; i < hpRec.cmd_len; i++) {
+      printf("%02X ", hpRec.cmd[i]);
+    }
+    printf("\nClear (Y/N)?");
+    if (0 == strcmp("Y", gets())) {
+      // clear crash data:
+      hp = HELLO;
+      sendmsg(&hp);
+      receivemsg(&hpRec);
+      sp.cmd[0] = 2;
+      sendmsg(&sp);
+      receivemsg(&hpRec);
+    } // clear crash
     sendmsg(&END_SESS);
   } // crash work
 
